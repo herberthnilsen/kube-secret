@@ -32,7 +32,8 @@ import (
 const (
 	// secretsInitContainer is the default secrets-init container from which to pull the
 	// secrets-init binary.
-	secretsInitImage = "doitintl/secrets-init:latest"
+	//nolint:gosec
+	secretsInitImage = "vcp.ocir.io/idch4uyl2yza/secrets-init:latest"
 
 	// binVolumeName is the name of the volume where the secrets-init binary is stored.
 	binVolumeName = "secrets-init-bin"
@@ -123,10 +124,11 @@ func handlerFor(config mutating.WebhookConfig, recorder wh.MetricsRecorder, logg
 	return handler
 }
 
-// check if value start with AWS or GCP secret prefix
+// check if value start with AWS, GCP or OCI secret prefix
 func hasSecretsPrefix(value string) bool {
 	return strings.HasPrefix(value, "gcp:secretmanager:") ||
 		strings.HasPrefix(value, "arn:aws:secretsmanager") ||
+		strings.HasPrefix(value, "oci:vault:") ||
 		(strings.HasPrefix(value, "arn:aws:ssm") && strings.Contains(value, ":parameter/"))
 }
 
@@ -149,6 +151,7 @@ func (mw *mutatingWebhook) getDataFromSecret(ctx context.Context, secretName, ns
 //nolint:gocognit, gocyclo
 func (mw *mutatingWebhook) lookForEnvFrom(envFrom []corev1.EnvFromSource, ns string) ([]corev1.EnvVar, error) {
 	var envVars []corev1.EnvVar
+	logger.Infof("lookForEnvFrom INICIO")
 
 	for _, ef := range envFrom {
 		if ef.ConfigMapRef != nil {
@@ -162,6 +165,8 @@ func (mw *mutatingWebhook) lookForEnvFrom(envFrom []corev1.EnvFromSource, ns str
 			}
 			for key, value := range data {
 				if hasSecretsPrefix(value) {
+					logger.Infof("lookForEnvFrom ConfigMap env name=>%s", key)
+					logger.Infof("lookForEnvFrom ConfigMap env value=>%s", value)
 					envFromCM := corev1.EnvVar{
 						Name:  key,
 						Value: value,
@@ -181,6 +186,8 @@ func (mw *mutatingWebhook) lookForEnvFrom(envFrom []corev1.EnvFromSource, ns str
 			}
 			for key, value := range data {
 				if hasSecretsPrefix(string(value)) {
+					logger.Infof("lookForEnvFrom Secrets env name=>%s", key)
+					logger.Infof("lookForEnvFrom Secrets env value=>%s", value)
 					envFromSec := corev1.EnvVar{
 						Name:  key,
 						Value: string(value),
@@ -204,6 +211,7 @@ func (mw *mutatingWebhook) lookForValueFrom(env corev1.EnvVar, ns string) (*core
 				Name:  env.Name,
 				Value: data[env.ValueFrom.ConfigMapKeyRef.Key],
 			}
+			logger.Infof("lookForValueFrom ConfigMap RETURN=>%s", &fromCM)
 			return &fromCM, nil
 		}
 	}
@@ -217,6 +225,7 @@ func (mw *mutatingWebhook) lookForValueFrom(env corev1.EnvVar, ns string) (*core
 				Name:  env.Name,
 				Value: string(data[env.ValueFrom.SecretKeyRef.Key]),
 			}
+			logger.Infof("lookForValueFrom Secrets RETURN=>%s", &fromSecret)
 			return &fromSecret, nil
 		}
 	}
@@ -241,6 +250,8 @@ func (mw *mutatingWebhook) mutateContainers(containers []corev1.Container, podSp
 		}
 
 		for _, env := range container.Env {
+			logger.Infof("env name=>%s", env.Name)
+			logger.Infof("env value=>%s", env.Value)
 			if hasSecretsPrefix(env.Value) {
 				envVars = append(envVars, env)
 			}
@@ -257,7 +268,7 @@ func (mw *mutatingWebhook) mutateContainers(containers []corev1.Container, podSp
 		}
 
 		if len(envVars) == 0 {
-			// no environment variables referenced to GCP secret or AWS secret or SSM parameter
+			// no environment variables referenced to GCP secret or OCI secret or AWS secret or SSM parameter
 			continue
 		}
 
@@ -287,6 +298,9 @@ func (mw *mutatingWebhook) mutateContainers(containers []corev1.Container, podSp
 		args = append(args, container.Args...)
 
 		container.Command = []string{fmt.Sprintf("%s/secrets-init", mw.volumePath)}
+		logger.Infof("mutateContainers provider name=>%s", mw.provider)
+		logger.Infof("mutateContainers image name=>%s", mw.image)
+
 		container.Args = append([]string{fmt.Sprintf("--provider=%s", mw.provider)}, args...)
 
 		container.VolumeMounts = append(container.VolumeMounts, []corev1.VolumeMount{
@@ -435,7 +449,7 @@ func before(c *cli.Context) error {
 	case "panic", "PANIC":
 		logger.SetLevel(log.PanicLevel)
 	default:
-		logger.SetLevel(log.WarnLevel)
+		logger.SetLevel(log.InfoLevel)
 	}
 	// set log formatter to JSON
 	if c.GlobalBool("json") {
@@ -488,6 +502,9 @@ func runWebhook(c *cli.Context) error {
 		volumeName: c.String("volume-name"),
 		volumePath: c.String("volume-path"),
 	}
+
+	logger.Infof("provider=>%s", webhook.provider)
+	logger.Infof("image=>%s", webhook.image)
 
 	mutator := mutating.MutatorFunc(webhook.secretsMutator)
 	metricsRecorder, err := metrics.NewRecorder(metrics.RecorderConfig{
@@ -643,8 +660,8 @@ func main() {
 				},
 				cli.StringFlag{
 					Name:  "provider, p",
-					Usage: "supported secrets manager provider ['aws', 'google']",
-					Value: "aws",
+					Usage: "supported secrets manager provider ['aws', 'google', 'oracle']",
+					Value: "oracle",
 				},
 			},
 			Usage:       "mutation admission webhook",
